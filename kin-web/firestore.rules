@@ -1,0 +1,79 @@
+rules_version = '2';
+
+// Kin V1 rules. Good enough for a demo, NOT production-hardened.
+// Known V1 trade-offs are listed at the bottom of this file.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Demo neighbors are written by the app itself with ids that start with "seed-".
+    function isSeedId(id) {
+      return id.matches('seed-.*');
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn();
+
+      // You create your own profile (or the app creates the seed neighbors).
+      allow create: if signedIn() && (request.auth.uid == uid || isSeedId(uid));
+
+      // You edit your own profile. Anyone signed in may change ONLY the trust
+      // fields, because rating someone updates their score.
+      allow update: if signedIn() && (
+        request.auth.uid == uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingAvg', 'ratingCount'])
+      );
+
+      allow delete: if false;
+    }
+
+    match /swaps/{swapId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn() && (
+        request.resource.data.ownerUid == request.auth.uid ||
+        isSeedId(request.resource.data.ownerUid)
+      );
+
+      // Owner or requester can update. Anyone can move an Open swap to Requested
+      // as themselves (that's "Request Swap").
+      allow update: if signedIn() && (
+        resource.data.ownerUid == request.auth.uid ||
+        resource.data.get('requesterUid', '') == request.auth.uid ||
+        (
+          resource.data.status == 'Open' &&
+          request.resource.data.status == 'Requested' &&
+          request.resource.data.requesterUid == request.auth.uid
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn() && (
+        request.resource.data.raterUid == request.auth.uid ||
+        isSeedId(request.resource.data.raterUid)
+      ) && request.resource.data.stars is int
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5;
+
+      // Ratings are permanent.
+      allow update, delete: if false;
+    }
+  }
+}
+
+// V1 trade-offs (fine for a demo, fix before a public launch):
+//  * Any signed-in user can read every user document, including phone numbers.
+//    The app only DISPLAYS a phone number after a swap is confirmed, but the
+//    data is readable. Move phone into a private subcollection before launch.
+//  * Trust scores are updated by the rating client. A Cloud Function would be
+//    the tamper-proof way to do this.
+//  * "seed-" ids can be created by any signed-in user so the app can preload the
+//    demo neighbors. Remove isSeedId() once you seed from the Firebase console.
